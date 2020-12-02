@@ -1,4 +1,4 @@
-// Copyright (c) 2009-2020 The BGL Core developers
+// Copyright (c) 2009-2020 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -193,7 +193,7 @@ static UniValue getpeerinfo(const JSONRPCRequest& request)
         if (fStateStats) {
             if (IsDeprecatedRPCEnabled("banscore")) {
                 // banscore is deprecated in v0.21 for removal in v0.22
-                obj.pushKV("banscore", statestats.m_misbehavior_score);
+                obj.pushKV("banscore", statestats.nMisbehavior);
             }
             obj.pushKV("synced_headers", statestats.nSyncHeight);
             obj.pushKV("synced_blocks", statestats.nCommonHeight);
@@ -604,8 +604,7 @@ static UniValue setban(const JSONRPCRequest& request)
 
     if (strCommand == "add")
     {
-        if ((isSubnet && node.banman->IsBanned(subNet)) ||
-            (!isSubnet && node.banman->IsBannedLevel(netAddr) == BanReasonManuallyAdded)) {
+        if (isSubnet ? node.banman->IsBanned(subNet) : node.banman->IsBanned(netAddr)) {
             throw JSONRPCError(RPC_CLIENT_NODE_ALREADY_ADDED, "Error: IP/Subnet already banned");
         }
 
@@ -844,7 +843,7 @@ static const CRPCCommand commands[] =
     { "hidden",             "addpeeraddress",         &addpeeraddress,         {"address", "port"} },
 };
 // clang-format on
-    for (const auto& c : commands) {
-        t.appendCommand(c.name, &c);
-    }
+
+    for (unsigned int vcidx = 0; vcidx < ARRAYLEN(commands); vcidx++)
+        t.appendCommand(commands[vcidx].name, &commands[vcidx]);
 }

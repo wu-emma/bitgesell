@@ -47,16 +47,7 @@ public:
     std::string GetCommand() const;
     bool IsValid(const MessageStartChars& messageStart) const;
 
-    ADD_SERIALIZE_METHODS;
-
-    template <typename Stream, typename Operation>
-    inline void SerializationOp(Stream& s, Operation ser_action)
-    {
-        READWRITE(pchMessageStart);
-        READWRITE(pchCommand);
-        READWRITE(nMessageSize);
-        READWRITE(pchChecksum);
-    }
+    SERIALIZE_METHODS(CMessageHeader, obj) { READWRITE(obj.pchMessageStart, obj.pchCommand, obj.nMessageSize, obj.pchChecksum); }
 
     char pchMessageStart[MESSAGE_START_SIZE];
     char pchCommand[COMMAND_SIZE];
@@ -264,7 +255,7 @@ const std::vector<std::string>& getAllNetMessageTypes();
 
 /** nServices flags */
 enum ServiceFlags : uint64_t {
-    // NOTE: When adding here, be sure to update qt/guiutil.cpp's formatServicesStr too
+    // NOTE: When adding here, be sure to update serviceFlagToStr too
     // Nothing
     NODE_NONE = 0,
     // NODE_NETWORK means that the node is capable of serving the complete block chain. It is currently
@@ -281,9 +272,6 @@ enum ServiceFlags : uint64_t {
     // NODE_WITNESS indicates that a node can be asked for blocks and transactions including
     // witness data.
     NODE_WITNESS = (1 << 3),
-    // NODE_COMPACT_FILTERS means the node will service basic block filter requests.
-    // See BIP157 and BIP158 for details on how this is implemented.
-    NODE_COMPACT_FILTERS = (1 << 6),
     // NODE_NETWORK_LIMITED means the same as NODE_NETWORK with the limitation of only
     // serving the last 288 (2 day) blocks
     // See BIP159 for details on how this is implemented.
@@ -362,17 +350,13 @@ public:
     CAddress() : CService{} {};
     explicit CAddress(CService ipIn, ServiceFlags nServicesIn) : CService{ipIn}, nServices{nServicesIn} {};
 
-    ADD_SERIALIZE_METHODS;
-
-    template <typename Stream, typename Operation>
-    inline void SerializationOp(Stream& s, Operation ser_action)
+    SERIALIZE_METHODS(CAddress, obj)
     {
-        if (ser_action.ForRead())
-            Init();
         SER_READ(obj, obj.nTime = TIME_INIT);
         int nVersion = s.GetVersion();
-        if (s.GetType() & SER_DISK)
+        if (s.GetType() & SER_DISK) {
             READWRITE(nVersion);
+        }
         if ((s.GetType() & SER_DISK) ||
             (nVersion != INIT_PROTO_VERSION && !(s.GetType() & SER_GETHASH))) {
             // The only time we serialize a CAddress object without nTime is in
@@ -387,10 +371,9 @@ public:
         READWRITEAS(CService, obj);
     }
 
+    ServiceFlags nServices{NODE_NONE};
     // disk and network only
     uint32_t nTime{TIME_INIT};
-
-    ServiceFlags nServices{NODE_NONE};
 };
 
 /** getdata message type flags */
@@ -421,14 +404,7 @@ public:
     CInv();
     CInv(int typeIn, const uint256& hashIn);
 
-    ADD_SERIALIZE_METHODS;
-
-    template <typename Stream, typename Operation>
-    inline void SerializationOp(Stream& s, Operation ser_action)
-    {
-        READWRITE(type);
-        READWRITE(hash);
-    }
+    SERIALIZE_METHODS(CInv, obj) { READWRITE(obj.type, obj.hash); }
 
     friend bool operator<(const CInv& a, const CInv& b);
 
@@ -446,7 +422,6 @@ public:
     int type;
     uint256 hash;
 };
-
 
 /** Convert a TX/WITNESS_TX/WTX CInv to a GenTxid. */
 GenTxid ToGenTxid(const CInv& inv);

@@ -158,12 +158,11 @@ inline uint160 Hash160(const T1& in1)
     return result;
 }
 
-/** A writer stream (for serialization) that computes a 256-bit hash. */
-
+/** A writer stream (for serialization) that computes a 256-bit Keccak hash. */
 class CHashWriter
 {
 private:
-    CSHA256 ctx;
+    CHash256BlockOrTransaction ctx;
 
     const int nType;
     const int nVersion;
@@ -184,8 +183,7 @@ public:
      */
     uint256 GetHash() {
         uint256 result;
-        ctx.Finalize(result.begin());
-        ctx.Reset().Write(result.begin(), CSHA256::OUTPUT_SIZE).Finalize(result.begin());
+        ctx.Finalize((unsigned char*)&result);
         return result;
     }
 
@@ -193,18 +191,19 @@ public:
      *
      * Invalidates this object.
      */
-    uint256 GetSHA256() {
-        uint256 result;
-        ctx.Finalize(result.begin());
-        return result;
-    }
+    //uint256 GetSHA256() {
+    //    uint256 result;
+    //    ctx.Finalize(result.begin());
+    //    return result;
+    //}
 
     /**
      * Returns the first 64 bits from the resulting hash.
      */
     inline uint64_t GetCheapHash() {
-        uint256 result = GetHash();
-        return ReadLE64(result.begin());
+        unsigned char result[CHash256::OUTPUT_SIZE];
+        ctx.Finalize(result);
+        return ReadLE64(result);
     }
 
     template<typename T>

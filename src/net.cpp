@@ -1014,8 +1014,6 @@ void CConnman::AcceptConnection(const ListenSocket& hListenSocket) {
     // on all platforms.  Set it again here just to be sure.
     SetSocketNoDelay(hSocket);
 
-    int bannedlevel = m_banman ? m_banman->IsBannedLevel(addr) : 0;
-
     // Don't accept connections from banned peers.
     bool banned = m_banman && m_banman->IsBanned(addr);
     if (!NetPermissions::HasFlag(permissionFlags, NetPermissionFlags::PF_NOBAN) && banned)
@@ -1617,6 +1615,20 @@ void CConnman::ThreadDNSAddressSeed()
         seeds_right_now = seeds.size();
     }
 
+    // goal: only query DNS seed if address need is acute
+    // * If we have a reasonable number of peers in addrman, spend
+    //   some time trying them first. This improves user privacy by
+    //   creating fewer identifying DNS requests, reduces trust by
+    //   giving seeds less influence on the network topology, and
+    //   reduces traffic to the seeds.
+    // * When querying DNS seeds query a few at once, this ensures
+    //   that we don't give DNS seeds the ability to eclipse nodes
+    //   that query them.
+    // * If we continue having problems, eventually query all the
+    //   DNS seeds, and if that fails too, also try the fixed seeds.
+    //   (done in ThreadOpenConnections)
+    const std::chrono::seconds seeds_wait_time = (addrman.size() >= DNSSEEDS_DELAY_PEER_THRESHOLD ? DNSSEEDS_DELAY_MANY_PEERS : DNSSEEDS_DELAY_FEW_PEERS);
+
     for (const std::string& seed : seeds) {
         if (seeds_right_now == 0) {
             seeds_right_now += DNSSEEDS_TO_QUERY_AT_ONCE;
@@ -1636,7 +1648,7 @@ void CConnman::ThreadDNSAddressSeed()
                     {
                         LOCK(cs_vNodes);
                         for (const CNode* pnode : vNodes) {
-                            nRelevant += pnode->fSuccessfullyConnected && !pnode->IsFeelerConn() && !pnode->IsAddrFetchConn() && !pnode->IsManualConn() && !pnode->fInbound;
+                            if (pnode->fSuccessfullyConnected && pnode->IsOutboundOrBlockRelayConn()) ++nRelevant;
                         }
                     }
                     if (nRelevant >= 2) {
@@ -1650,7 +1662,6 @@ void CConnman::ThreadDNSAddressSeed()
                     }
                 }
             }
-            seeds_right_now += DNSSEEDS_TO_QUERY_AT_ONCE;
         }
 
         if (interruptNet) return;
@@ -1662,6 +1673,7 @@ void CConnman::ThreadDNSAddressSeed()
                 if (!interruptNet.sleep_for(std::chrono::seconds{1})) return;
             } while (!fNetworkActive);
         }
+
         LogPrintf("Loading addresses from DNS seed %s\n", seed);
         if (HaveNameProxy()) {
             AddAddrFetch(seed);
@@ -1746,7 +1758,7 @@ int CConnman::GetExtraOutboundCount()
     {
         LOCK(cs_vNodes);
         for (const CNode* pnode : vNodes) {
-            if (!pnode->fInbound && !pnode->IsManualConn() && !pnode->IsFeelerConn() && !pnode->fDisconnect && !pnode->IsAddrFetchConn() && pnode->fSuccessfullyConnected) {
+            if (pnode->fSuccessfullyConnected && !pnode->fDisconnect && pnode->IsOutboundOrBlockRelayConn()) {
                 ++nOutbound;
             }
         }
@@ -1769,6 +1781,7 @@ void CConnman::ThreadOpenConnections(const std::vector<std::string> connect)
                 for (int i = 0; i < 10 && i < nLoop; i++)
                 {
                     if (!interruptNet.sleep_for(std::chrono::milliseconds(500)))
+                        return;
                 }
             }
             if (!interruptNet.sleep_for(std::chrono::milliseconds(500)))
@@ -1929,19 +1942,24 @@ void CConnman::ThreadOpenConnections(const std::vector<std::string> connect)
                 LogPrint(BCLog::NET, "Making feeler connection to %s\n", addrConnect.ToString());
             }
 
-            // Open this connection as block-relay-only if we're already at our
-            // full-relay capacity, but not yet at our block-relay peer limit.
-            bool block_relay_only = nOutboundBlockRelay < m_max_outbound_block_relay && nOutboundFullRelay >= m_max_outbound_full_relay;
             ConnectionType conn_type;
-            if(fFeeler) {
+            // Determine what type of connection to open. If fFeeler is not
+            // set, open OUTBOUND connections until we meet our full-relay
+            // capacity. Then open BLOCK_RELAY connections until we hit our
+            // block-relay peer limit. Otherwise, default to opening an
+            // OUTBOUND connection.
+            if (fFeeler) {
                 conn_type = ConnectionType::FEELER;
-            } else if (block_relay_only) {
+            } else if (nOutboundFullRelay < m_max_outbound_full_relay) {
+                conn_type = ConnectionType::OUTBOUND;
+            } else if (nOutboundBlockRelay < m_max_outbound_block_relay) {
                 conn_type = ConnectionType::BLOCK_RELAY;
             } else {
+                // GetTryNewOutboundPeer() is true
                 conn_type = ConnectionType::OUTBOUND;
             }
 
-            OpenNetworkConnection(addrConnect, (int)setConnected.size() >= std::min(nMaxConnections - 1, 2), &grant, nullptr, false, conn_type);
+            OpenNetworkConnection(addrConnect, (int)setConnected.size() >= std::min(nMaxConnections - 1, 2), &grant, nullptr, conn_type);
         }
     }
 }
@@ -2028,7 +2046,7 @@ void CConnman::ThreadOpenAddedConnections()
 }
 
 // if successful, this moves the passed grant to the constructed node
-void CConnman::OpenNetworkConnection(const CAddress& addrConnect, bool fCountFailure, CSemaphoreGrant *grantOutbound, const char *pszDest, bool m_addr_fetch, ConnectionType conn_type)
+void CConnman::OpenNetworkConnection(const CAddress& addrConnect, bool fCountFailure, CSemaphoreGrant *grantOutbound, const char *pszDest, ConnectionType conn_type)
 {
     assert(conn_type != ConnectionType::INBOUND);
 
@@ -2055,6 +2073,7 @@ void CConnman::OpenNetworkConnection(const CAddress& addrConnect, bool fCountFai
         return;
     if (grantOutbound)
         grantOutbound->MoveTo(pnode->grantOutbound);
+
     m_msgproc->InitializeNode(pnode);
     {
         LOCK(cs_vNodes);
@@ -2431,7 +2450,7 @@ void CConnman::Interrupt()
     }
 }
 
-void CConnman::Stop()
+void CConnman::StopThreads()
 {
     if (threadMessageHandler.joinable())
         threadMessageHandler.join();
@@ -2443,14 +2462,17 @@ void CConnman::Stop()
         threadDNSAddressSeed.join();
     if (threadSocketHandler.joinable())
         threadSocketHandler.join();
+}
 
-    if (fAddressesInitialized)
-    {
+void CConnman::StopNodes()
+{
+    if (fAddressesInitialized) {
         DumpAddresses();
         fAddressesInitialized = false;
     }
 
     // Close sockets
+    LOCK(cs_vNodes);
     for (CNode* pnode : vNodes)
         pnode->CloseSocketDisconnect();
     for (ListenSocket& hListenSocket : vhListenSocket)
@@ -2459,10 +2481,10 @@ void CConnman::Stop()
                 LogPrintf("CloseSocket(hListenSocket) failed with error %s\n", NetworkErrorString(WSAGetLastError()));
 
     // clean up some globals (to help leak detection)
-    for (CNode *pnode : vNodes) {
+    for (CNode* pnode : vNodes) {
         DeleteNode(pnode);
     }
-    for (CNode *pnode : vNodesDisconnected) {
+    for (CNode* pnode : vNodesDisconnected) {
         DeleteNode(pnode);
     }
     vNodes.clear();
@@ -2477,7 +2499,7 @@ void CConnman::DeleteNode(CNode* pnode)
     assert(pnode);
     bool fUpdateConnectionTime = false;
     m_msgproc->FinalizeNode(pnode->GetId(), fUpdateConnectionTime);
-    if(fUpdateConnectionTime) {
+    if (fUpdateConnectionTime) {
         addrman.Connected(pnode->addr);
     }
     delete pnode;
@@ -2745,12 +2767,10 @@ CNode::CNode(NodeId idIn, ServiceFlags nLocalServicesIn, int nMyStartingHeightIn
     : nTimeConnected(GetSystemTimeInSeconds()),
     addr(addrIn),
     addrBind(addrBindIn),
-    fInbound(conn_type_in == ConnectionType::INBOUND),
     nKeyedNetGroup(nKeyedNetGroupIn),
     // Don't relay addr messages to peers that we connect to as block-relay-only
     // peers (to prevent adversaries from inferring these links from addr
     // traffic).
-    m_addr_known{conn_type_in == ConnectionType::BLOCK_RELAY ? nullptr : MakeUnique<CRollingBloomFilter>(5000, 0.001)},
     id(idIn),
     nLocalHostNonce(nLocalHostNonceIn),
     m_conn_type(conn_type_in),

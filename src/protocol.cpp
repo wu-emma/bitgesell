@@ -1,5 +1,5 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2019 The Bitcoin Core developers
+// Copyright (c) 2009-2019 The BGL Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -217,7 +217,6 @@ static std::string serviceFlagToStr(size_t bit)
     case NODE_GETUTXO:         return "GETUTXO";
     case NODE_BLOOM:           return "BLOOM";
     case NODE_WITNESS:         return "WITNESS";
-    case NODE_COMPACT_FILTERS: return "COMPACT_FILTERS";
     case NODE_NETWORK_LIMITED: return "NETWORK_LIMITED";
     // Not using default, so we get warned when a case is missing
     }

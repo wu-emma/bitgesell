@@ -24,7 +24,6 @@
 #include <index/blockfilterindex.h>
 #include <index/txindex.h>
 #include <interfaces/chain.h>
-#include <interfaces/node.h>
 #include <key.h>
 #include <miner.h>
 #include <net.h>
@@ -200,7 +199,20 @@ void Shutdown(NodeContext& node)
     // Because these depend on each-other, we make sure that neither can be
     // using the other before destroying them.
     if (node.peer_logic) UnregisterValidationInterface(node.peer_logic.get());
-    if (node.connman) node.connman->Stop();
+    // Follow the lock order requirements:
+    // * CheckForStaleTipAndEvictPeers locks cs_main before indirectly calling GetExtraOutboundCount
+    //   which locks cs_vNodes.
+    // * ProcessMessage locks cs_main and g_cs_orphans before indirectly calling ForEachNode which
+    //   locks cs_vNodes.
+    // * CConnman::Stop calls DeleteNode, which calls FinalizeNode, which locks cs_main and calls
+    //   EraseOrphansFor, which locks g_cs_orphans.
+    //
+    // Thus the implicit locking order requirement is: (1) cs_main, (2) g_cs_orphans, (3) cs_vNodes.
+    if (node.connman) {
+        node.connman->StopThreads();
+        LOCK2(::cs_main, ::g_cs_orphans);
+        node.connman->StopNodes();
+    }
 
     StopTorControl();
 
@@ -263,7 +275,6 @@ void Shutdown(NodeContext& node)
 
     if (node.chainman) {
         LOCK(cs_main);
-
         for (CChainState* chainstate : node.chainman->GetAll()) {
             if (chainstate->CanFlushToDisk()) {
                 chainstate->ForceFlushStateToDisk();
@@ -387,7 +398,7 @@ void SetupServerArgs(NodeContext& node)
 #endif
     argsman.AddArg("-blockreconstructionextratxn=<n>", strprintf("Extra transactions to keep in memory for compact block reconstructions (default: %u)", DEFAULT_BLOCK_RECONSTRUCTION_EXTRA_TXN), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-blocksonly", strprintf("Whether to reject transactions from network peers. Automatic broadcast and rebroadcast of any transactions from inbound peers is disabled, unless the peer has the 'forcerelay' permission. RPC transactions are not affected. (default: %u)", DEFAULT_BLOCKSONLY), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
-    argsman.AddArg("-conf=<file>", strprintf("Specify path to read-only configuration file. Relative paths will be prefixed by datadir location. (default: %s)", BITCOIN_CONF_FILENAME), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-conf=<file>", strprintf("Specify path to read-only configuration file. Relative paths will be prefixed by datadir location. (default: %s)", BGL_CONF_FILENAME), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-datadir=<dir>", "Specify data directory", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-dbbatchsize", strprintf("Maximum database write batch size in bytes (default: %u)", nDefaultDbBatchSize), ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::OPTIONS);
     argsman.AddArg("-dbcache=<n>", strprintf("Maximum database cache size <n> MiB (%d to %d, default: %d). In addition, unused mempool memory is shared for this cache (see -maxmempool).", nMinDbCache, nMaxDbCache, nDefaultDbCache), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
@@ -402,13 +413,13 @@ void SetupServerArgs(NodeContext& node)
     argsman.AddArg("-par=<n>", strprintf("Set the number of script verification threads (%u to %d, 0 = auto, <0 = leave that many cores free, default: %d)",
         -GetNumCores(), MAX_SCRIPTCHECK_THREADS, DEFAULT_SCRIPTCHECK_THREADS), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-persistmempool", strprintf("Whether to save the mempool on shutdown and load on restart (default: %u)", DEFAULT_PERSIST_MEMPOOL), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
-    argsman.AddArg("-pid=<file>", strprintf("Specify pid file. Relative paths will be prefixed by a net-specific datadir location. (default: %s)", BITCOIN_PID_FILENAME), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-pid=<file>", strprintf("Specify pid file. Relative paths will be prefixed by a net-specific datadir location. (default: %s)", BGL_PID_FILENAME), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-prune=<n>", strprintf("Reduce storage requirements by enabling pruning (deleting) of old blocks. This allows the pruneblockchain RPC to be called to delete specific blocks, and enables automatic pruning of old blocks if a target size in MiB is provided. This mode is incompatible with -txindex and -rescan. "
             "Warning: Reverting this setting requires re-downloading the entire blockchain. "
             "(default: 0 = disable pruning blocks, 1 = allow manual pruning via RPC, >=%u = automatically prune block files to stay under the specified target size in MiB)", MIN_DISK_SPACE_FOR_BLOCK_FILES / 1024 / 1024), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-reindex", "Rebuild chain state and block index from the blk*.dat files on disk", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-reindex-chainstate", "Rebuild chain state from the currently indexed blocks. When in pruning mode or if blocks on disk might be corrupted, use full -reindex instead.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
-    argsman.AddArg("-settings=<file>", strprintf("Specify path to dynamic settings data file. Can be disabled with -nosettings. File is written at runtime and not meant to be edited by users (use %s instead for custom settings). Relative paths will be prefixed by datadir location. (default: %s)", BITCOIN_CONF_FILENAME, BITCOIN_SETTINGS_FILENAME), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-settings=<file>", strprintf("Specify path to dynamic settings data file. Can be disabled with -nosettings. File is written at runtime and not meant to be edited by users (use %s instead for custom settings). Relative paths will be prefixed by datadir location. (default: %s)", BGL_CONF_FILENAME, BGL_SETTINGS_FILENAME), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
 #ifndef WIN32
     argsman.AddArg("-sysperms", "Create new files with system default permissions, instead of umask 077 (only effective with disabled wallet functionality)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
 #else
@@ -571,7 +582,6 @@ void SetupServerArgs(NodeContext& node)
 std::string LicenseInfo()
 {
     const std::string URL_SOURCE_CODE = "<https://github.com/BGL/BGL>";
-    const std::string URL_WEBSITE = "<https://BGLcore.org>";
 
     return CopyrightHolders(strprintf(_("Copyright (C) %i-%i").translated, 2009, COPYRIGHT_YEAR) + " ") + "\n" +
            "\n" +
@@ -722,6 +732,7 @@ static void ThreadImport(ChainstateManager& chainman, std::vector<fs::path> vImp
     }
 
     // scan for better chains in the block chain database, that are not yet connected in the active best chain
+
     // We can't hold cs_main during ActivateBestChain even though we're accessing
     // the chainman unique_ptrs since ABC requires us not to be holding cs_main, so retrieve
     // the relevant pointers before the ABC call.
@@ -732,7 +743,6 @@ static void ThreadImport(ChainstateManager& chainman, std::vector<fs::path> vImp
             StartShutdown();
             return;
         }
-
     }
 
     if (gArgs.GetBoolArg("-stopafterblockimport", DEFAULT_STOPAFTERBLOCKIMPORT)) {
@@ -989,13 +999,11 @@ bool AppInitParameterInteraction()
         }
     }
 
-    // Signal NODE_COMPACT_FILTERS if peerblockfilters and basic filters index are both enabled.
-    if (gArgs.GetBoolArg("-peerblockfilters", DEFAULT_PEERBLOCKFILTERS)) {
-        if (g_enabled_filter_types.count(BlockFilterType::BASIC) != 1) {
-            return InitError(_("Cannot set -peerblockfilters without -blockfilterindex."));
-        }
-
-        nLocalServices = ServiceFlags(nLocalServices | NODE_COMPACT_FILTERS);
+    // Basic filters are the only supported filters. The basic filters index must be enabled
+    // to serve compact filters
+    if (gArgs.GetBoolArg("-peerblockfilters", DEFAULT_PEERBLOCKFILTERS) &&
+        g_enabled_filter_types.count(BlockFilterType::BASIC) != 1) {
+        return InitError(_("Cannot set -peerblockfilters without -blockfilterindex."));
     }
 
     // if using block pruning, then disallow txindex
@@ -1234,7 +1242,7 @@ bool AppInitLockDataDirectory()
     return true;
 }
 
-bool AppInitMain(const util::Ref& context, NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
+bool AppInitMain(const util::Ref& context, NodeContext& node)
 {
     const CChainParams& chainparams = Params();
     // ********************************************************* Step 4a: application initialization
@@ -1376,7 +1384,7 @@ bool AppInitMain(const util::Ref& context, NodeContext& node, interfaces::BlockA
     node.chainman = &g_chainman;
     ChainstateManager& chainman = *Assert(node.chainman);
 
-    node.peer_logic.reset(new PeerLogicValidation(*node.connman, node.banman.get(), *node.scheduler, chainman, *node.mempool));
+    node.peer_logic.reset(new PeerLogicValidation(node.connman.get(), node.banman.get(), *node.scheduler, chainman, *node.mempool));
     RegisterValidationInterface(node.peer_logic.get());
 
     // sanitize comments per BIP-0014, format user agent and check total size
@@ -1553,7 +1561,6 @@ bool AppInitMain(const util::Ref& context, NodeContext& node, interfaces::BlockA
 
         do {
             const int64_t load_block_index_start_time = GetTimeMillis();
-            bool is_coinsview_empty;
             try {
                 LOCK(cs_main);
                 chainman.InitializeChainstate();
@@ -1611,6 +1618,7 @@ bool AppInitMain(const util::Ref& context, NodeContext& node, interfaces::BlockA
 
                 // At this point we're either in reindex or we've loaded a useful
                 // block tree into BlockIndex()!
+
                 bool failed_chainstate_init = false;
 
                 for (CChainState* chainstate : chainman.GetAll()) {
@@ -1634,25 +1642,30 @@ bool AppInitMain(const util::Ref& context, NodeContext& node, interfaces::BlockA
                         break;
                     }
 
-                // ReplayBlocks is a no-op if we cleared the coinsviewdb with -reindex or -reindex-chainstate
-                if (!::ChainstateActive().ReplayBlocks(chainparams)) {
-                    strLoadError = _("Unable to replay blocks. You will need to rebuild the database using -reindex-chainstate.").translated;
-                    break;
-                }
+                    // ReplayBlocks is a no-op if we cleared the coinsviewdb with -reindex or -reindex-chainstate
+                    if (!chainstate->ReplayBlocks(chainparams)) {
+                        strLoadError = _("Unable to replay blocks. You will need to rebuild the database using -reindex-chainstate.");
+                        failed_chainstate_init = true;
+                        break;
+                    }
 
                     // The on-disk coinsdb is now in a good state, create the cache
                     chainstate->InitCoinsCache(nCoinCacheUsage);
                     assert(chainstate->CanFlushToDisk());
 
-                is_coinsview_empty = fReset || fReindexChainState ||
-                    ::ChainstateActive().CoinsTip().GetBestBlock().IsNull();
-                if (!is_coinsview_empty) {
-                    // LoadChainTip initializes the chain based on CoinsTip()'s best block
-                    if (!::ChainstateActive().LoadChainTip(chainparams)) {
-                        strLoadError = _("Error initializing block database").translated;
-                        break;
+                    if (!is_coinsview_empty(chainstate)) {
+                        // LoadChainTip initializes the chain based on CoinsTip()'s best block
+                        if (!chainstate->LoadChainTip(chainparams)) {
+                            strLoadError = _("Error initializing block database");
+                            failed_chainstate_init = true;
+                            break; // out of the per-chainstate loop
+                        }
+                        assert(chainstate->m_chain.Tip() != nullptr);
                     }
-                    assert(::ChainActive().Tip() != nullptr);
+                }
+
+                if (failed_chainstate_init) {
+                    break; // out of the chainstate activation do-while
                 }
             } catch (const std::exception& e) {
                 LogPrintf("%s\n", e.what());
@@ -1679,23 +1692,14 @@ bool AppInitMain(const util::Ref& context, NodeContext& node, interfaces::BlockA
                 }
             }
 
+            if (failed_rewind) {
+                break; // out of the chainstate activation do-while
+            }
+
+            bool failed_verification = false;
+
             try {
                 LOCK(cs_main);
-                if (!is_coinsview_empty) {
-                    uiInterface.InitMessage(_("Verifying blocks...").translated);
-                    if (fHavePruned && gArgs.GetArg("-checkblocks", DEFAULT_CHECKBLOCKS) > MIN_BLOCKS_TO_KEEP) {
-                        LogPrintf("Prune: pruned datadir may not have more than %d blocks; only checking available blocks\n",
-                            MIN_BLOCKS_TO_KEEP);
-                    }
-
-                    CBlockIndex* tip = ::ChainActive().Tip();
-                    RPCNotifyBlockChange(true, tip);
-                    if (tip && tip->nTime > GetAdjustedTime() + 2 * 60 * 60) {
-                        strLoadError = _("The block database contains a block which appears to be from the future. "
-                                "This may be due to your computer's date and time being set incorrectly. "
-                                "Only rebuild the block database if you are sure that your computer's date and time are correct").translated;
-                        break;
-                    }
 
                 for (CChainState* chainstate : chainman.GetAll()) {
                     if (!is_coinsview_empty(chainstate)) {
@@ -1735,8 +1739,10 @@ bool AppInitMain(const util::Ref& context, NodeContext& node, interfaces::BlockA
                 break;
             }
 
-            fLoaded = true;
-            LogPrintf(" block index %15dms\n", GetTimeMillis() - load_block_index_start_time);
+            if (!failed_verification) {
+                fLoaded = true;
+                LogPrintf(" block index %15dms\n", GetTimeMillis() - load_block_index_start_time);
+            }
         } while(false);
 
         if (!fLoaded && !ShutdownRequested()) {
@@ -1871,15 +1877,6 @@ bool AppInitMain(const util::Ref& context, NodeContext& node, interfaces::BlockA
         LOCK(cs_main);
         LogPrintf("block tree size = %u\n", chainman.BlockIndex().size());
         chain_active_height = chainman.ActiveChain().Height();
-        if (tip_info) {
-            tip_info->block_height = chain_active_height;
-            tip_info->block_time = chainman.ActiveChain().Tip() ? chainman.ActiveChain().Tip()->GetBlockTime() : Params().GenesisBlock().GetBlockTime();
-            tip_info->verification_progress = GuessVerificationProgress(Params().TxData(), chainman.ActiveChain().Tip());
-        }
-        if (tip_info && ::pindexBestHeader) {
-            tip_info->header_height = ::pindexBestHeader->nHeight;
-            tip_info->header_time = ::pindexBestHeader->GetBlockTime();
-        }
     }
     LogPrintf("nBestHeight = %d\n", chain_active_height);
 

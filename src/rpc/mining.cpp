@@ -1,5 +1,5 @@
 // Copyright (c) 2010 Satoshi Nakamoto
-// Copyright (c) 2009-2020 The BGL Core developers
+// Copyright (c) 2009-2020 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -162,15 +162,23 @@ static UniValue generateBlocks(ChainstateManager& chainman, const CTxMemPool& me
             ++nHeight;
             blockHashes.push_back(block_hash.GetHex());
         }
-        while (nMaxTries > 0 && pblock->nNonce < std::numeric_limits<uint32_t>::max() && !CheckProofOfWork(pblock->GetHash(), pblock->nBits, Params().GetConsensus()) && !ShutdownRequested()) {
-            ++pblock->nNonce;
-            --nMaxTries;
+    }
+    return blockHashes;
+}
+
+static bool getScriptFromDescriptor(const std::string& descriptor, CScript& script, std::string& error)
+{
+    FlatSigningProvider key_provider;
+    const auto desc = Parse(descriptor, key_provider, error, /* require_checksum = */ false);
+    if (desc) {
+        if (desc->IsRange()) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "Ranged descriptor not accepted. Maybe pass through deriveaddresses first?");
         }
-        if (nMaxTries == 0 || ShutdownRequested()) {
-            break;
-        }
-        if (pblock->nNonce == std::numeric_limits<uint32_t>::max()) {
-            continue;
+
+        FlatSigningProvider provider;
+        std::vector<CScript> scripts;
+        if (!desc->Expand(0, key_provider, scripts, provider)) {
+            throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, strprintf("Cannot derive script without private keys"));
         }
 
         // Combo descriptors can have 2 or 4 scripts, so we can't just check scripts.size() == 1
@@ -185,13 +193,11 @@ static UniValue generateBlocks(ChainstateManager& chainman, const CTxMemPool& me
             // Else take the 2nd script, since it is p2pkh
             script = scripts.at(1);
         }
-        std::shared_ptr<const CBlock> shared_pblock = std::make_shared<const CBlock>(*pblock);
-        if (!ProcessNewBlock(Params(), shared_pblock, true, nullptr))
-            throw JSONRPCError(RPC_INTERNAL_ERROR, "ProcessNewBlock, block not accepted");
-        ++nHeight;
-        blockHashes.push_back(pblock->GetHash().GetHex());
+
+        return true;
+    } else {
+        return false;
     }
-    return blockHashes;
 }
 
 static UniValue generatetodescriptor(const JSONRPCRequest& request)
@@ -218,37 +224,16 @@ static UniValue generatetodescriptor(const JSONRPCRequest& request)
     const int num_blocks{request.params[0].get_int()};
     const uint64_t max_tries{request.params[2].isNull() ? DEFAULT_MAX_TRIES : request.params[2].get_int()};
 
-    FlatSigningProvider key_provider;
+    CScript coinbase_script;
     std::string error;
-    const auto desc = Parse(request.params[1].get_str(), key_provider, error, /* require_checksum = */ false);
-    if (!desc) {
+    if (!getScriptFromDescriptor(request.params[1].get_str(), coinbase_script, error)) {
         throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, error);
-    }
-    if (desc->IsRange()) {
-        throw JSONRPCError(RPC_INVALID_PARAMETER, "Ranged descriptor not accepted. Maybe pass through deriveaddresses first?");
-    }
-
-    FlatSigningProvider provider;
-    std::vector<CScript> coinbase_script;
-    if (!desc->Expand(0, key_provider, coinbase_script, provider)) {
-        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, strprintf("Cannot derive script without private keys"));
     }
 
     const CTxMemPool& mempool = EnsureMemPool(request.context);
     ChainstateManager& chainman = EnsureChainman(request.context);
 
     return generateBlocks(chainman, mempool, coinbase_script, num_blocks, max_tries);
-}
-
-static UniValue generate(const JSONRPCRequest& request)
-{
-    const std::string help_str{"generate ( nblocks maxtries ) has been replaced by the -generate cli option. Refer to -help for more information."};
-
-    if (request.fHelp) {
-        throw std::runtime_error(help_str);
-    } else {
-        throw JSONRPCError(RPC_METHOD_NOT_FOUND, help_str);
-    }
 }
 
 static UniValue generatetoaddress(const JSONRPCRequest& request)
@@ -258,8 +243,12 @@ static UniValue generatetoaddress(const JSONRPCRequest& request)
                 {
                     {"nblocks", RPCArg::Type::NUM, RPCArg::Optional::NO, "How many blocks are generated immediately."},
                     {"address", RPCArg::Type::STR, RPCArg::Optional::NO, "The address to send the newly generated BGL to."},
+                    {"maxtries", RPCArg::Type::NUM, /* default */ ToString(DEFAULT_MAX_TRIES), "How many iterations to try."},
+                },
+                RPCResult{
                     RPCResult::Type::ARR, "", "hashes of blocks generated",
                     {
+                        {RPCResult::Type::STR_HEX, "", "blockhash"},
                     }},
                 RPCExamples{
             "\nGenerate 11 blocks to myaddress\n"
@@ -801,6 +790,8 @@ static UniValue getblocktemplate(const JSONRPCRequest& request)
     result.pushKV("capabilities", aCaps);
 
     UniValue aRules(UniValue::VARR);
+    aRules.push_back("csv");
+    if (!fPreSegWit) aRules.push_back("!segwit");
     UniValue vbavailable(UniValue::VOBJ);
     for (int j = 0; j < (int)Consensus::MAX_VERSION_BITS_DEPLOYMENTS; ++j) {
         Consensus::DeploymentPos pos = Consensus::DeploymentPos(j);
@@ -1028,7 +1019,7 @@ static UniValue estimatesmartfee(const JSONRPCRequest& request)
                     RPCResult::Type::OBJ, "", "",
                     {
                         {RPCResult::Type::NUM, "feerate", /* optional */ true, "estimate fee rate in " + CURRENCY_UNIT + "/kB (only present if no errors were encountered)"},
-                        {RPCResult::Type::ARR, "errors", /* optional */ true, "Errors encountered during processing (if there are any)",
+                        {RPCResult::Type::ARR, "errors", "Errors encountered during processing",
                             {
                                 {RPCResult::Type::STR, "", "error"},
                             }},
@@ -1107,7 +1098,7 @@ static UniValue estimaterawfee(const JSONRPCRequest& request)
                                 {
                                     {RPCResult::Type::ELISION, "", ""},
                                 }},
-                                {RPCResult::Type::ARR, "errors", /* optional */ true, "Errors encountered during processing (if there are any)",
+                                {RPCResult::Type::ARR, "errors", /* optional */ true, "Errors encountered during processing",
                                 {
                                     {RPCResult::Type::STR, "error", ""},
                                 }},
@@ -1207,10 +1198,9 @@ static const CRPCCommand commands[] =
     { "util",               "estimatesmartfee",       &estimatesmartfee,       {"conf_target", "estimate_mode"} },
 
     { "hidden",             "estimaterawfee",         &estimaterawfee,         {"conf_target", "threshold"} },
-    { "hidden",             "generate",               &generate,               {} },
 };
 // clang-format on
-    for (const auto& c : commands) {
-        t.appendCommand(c.name, &c);
-    }
+
+    for (unsigned int vcidx = 0; vcidx < ARRAYLEN(commands); vcidx++)
+        t.appendCommand(commands[vcidx].name, &commands[vcidx]);
 }

@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2020 The BGL Core developers
+// Copyright (c) 2018-2020 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -80,10 +80,10 @@ public:
         return AppInitBasicSetup() && AppInitParameterInteraction() && AppInitSanityChecks() &&
                AppInitLockDataDirectory();
     }
-    bool appInitMain(interfaces::BlockAndHeaderTipInfo* tip_info) override
+    bool appInitMain() override
     {
         m_context->chain = MakeChain(*m_context);
-        return AppInitMain(m_context_ref, *m_context, tip_info);
+        return AppInitMain(m_context_ref, *m_context);
     }
     void appShutdown() override
     {

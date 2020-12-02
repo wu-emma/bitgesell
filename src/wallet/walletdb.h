@@ -1,5 +1,5 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2020 The BGL Core developers
+// Copyright (c) 2009-2020 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -261,6 +261,10 @@ public:
     DBErrors ZapSelectTx(std::vector<uint256>& vHashIn, std::vector<uint256>& vHashOut);
     /* Function to determine if a certain KV/key-type is a key (cryptographical key) type */
     static bool IsKeyType(const std::string& strType);
+    /* verifies the database environment */
+    static bool VerifyEnvironment(const fs::path& wallet_path, bilingual_str& errorStr);
+    /* verifies the database file */
+    static bool VerifyDatabaseFile(const fs::path& wallet_path, bilingual_str& errorStr);
 
     //! write the hdchain model (external chain child index counter)
     bool WriteHDChain(const CHDChain& chain);
@@ -282,9 +286,6 @@ void MaybeCompactWalletDB();
 
 //! Unserialize a given Key-Value pair and load it into the wallet
 bool ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue, std::string& strType, std::string& strErr);
-
-/* Recover filter (used as callback), will only let keys (cryptographical keys) as KV/key-type pass through */
-bool RecoverKeysOnlyFilter(void *callbackData, CDataStream ssKey, CDataStream ssValue);
 
 /** Return whether a wallet database is currently loaded. */
 bool IsWalletLoaded(const fs::path& wallet_path);

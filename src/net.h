@@ -118,11 +118,12 @@ struct CSerializedNetMsg
  * information we have available at the time of opening or accepting the
  * connection. Aside from INBOUND, all types are initiated by us. */
 enum class ConnectionType {
-    INBOUND,
-    OUTBOUND,
-    MANUAL,
-    FEELER,
-    BLOCK_RELAY,
+    INBOUND, /**< peer initiated connections */
+    OUTBOUND, /**< full relay connections (blocks, addrs, txns) made automatically. Addresses selected from AddrMan. */
+    MANUAL, /**< connections to addresses added via addnode or the connect command line argument */
+    FEELER, /**< short lived connections used to test address validity */
+    BLOCK_RELAY, /**< only relay blocks to these automatic outbound connections. Addresses selected from AddrMan. */
+    ADDR_FETCH, /**< short lived connections used to solicit addrs when starting the node without a populated AddrMan */
 };
 
 class NetEventsInterface;
@@ -196,22 +197,19 @@ public:
     ~CConnman();
     bool Start(CScheduler& scheduler, const Options& options);
 
-    // TODO: Remove NO_THREAD_SAFETY_ANALYSIS. Lock cs_vNodes before reading the variable vNodes.
-    //
-    // When removing NO_THREAD_SAFETY_ANALYSIS be aware of the following lock order requirements:
-    // * CheckForStaleTipAndEvictPeers locks cs_main before indirectly calling GetExtraOutboundCount
-    //   which locks cs_vNodes.
-    // * ProcessMessage locks cs_main and g_cs_orphans before indirectly calling ForEachNode which
-    //   locks cs_vNodes.
-    //
-    // Thus the implicit locking order requirement is: (1) cs_main, (2) g_cs_orphans, (3) cs_vNodes.
-    void Stop() NO_THREAD_SAFETY_ANALYSIS;
+    void StopThreads();
+    void StopNodes();
+    void Stop()
+    {
+        StopThreads();
+        StopNodes();
+    };
 
     void Interrupt();
     bool GetNetworkActive() const { return fNetworkActive; };
     bool GetUseAddrmanOutgoing() const { return m_use_addrman_outgoing; };
     void SetNetworkActive(bool active);
-    void OpenNetworkConnection(const CAddress& addrConnect, bool fCountFailure, CSemaphoreGrant *grantOutbound = nullptr, const char *strDest = nullptr, bool m_addr_fetch = false, ConnectionType conn_type = ConnectionType::OUTBOUND);
+    void OpenNetworkConnection(const CAddress& addrConnect, bool fCountFailure, CSemaphoreGrant *grantOutbound = nullptr, const char *strDest = nullptr, ConnectionType conn_type = ConnectionType::OUTBOUND);
     bool CheckIncomingNonce(uint64_t nonce);
 
     bool ForNode(NodeId id, std::function<bool(CNode* pnode)> func);
@@ -822,6 +820,21 @@ public:
     std::atomic_bool fPauseRecv{false};
     std::atomic_bool fPauseSend{false};
 
+    bool IsOutboundOrBlockRelayConn() const {
+        switch(m_conn_type) {
+            case ConnectionType::OUTBOUND:
+            case ConnectionType::BLOCK_RELAY:
+                return true;
+            case ConnectionType::INBOUND:
+            case ConnectionType::MANUAL:
+            case ConnectionType::ADDR_FETCH:
+            case ConnectionType::FEELER:
+                return false;
+        }
+
+        assert(false);
+    }
+
     bool IsFullOutboundConn() const {
         return m_conn_type == ConnectionType::OUTBOUND;
     }
@@ -873,8 +886,8 @@ public:
     std::vector<CAddress> vAddrToSend;
     std::unique_ptr<CRollingBloomFilter> m_addr_known = nullptr;
     bool fGetAddr{false};
-    int64_t nNextAddrSend GUARDED_BY(cs_sendProcessing){0};
-    int64_t nNextLocalAddrSend GUARDED_BY(cs_sendProcessing){0};
+    std::chrono::microseconds m_next_addr_send GUARDED_BY(cs_sendProcessing){0};
+    std::chrono::microseconds m_next_local_addr_send GUARDED_BY(cs_sendProcessing){0};
 
     bool IsAddrRelayPeer() const { return m_addr_known != nullptr; }
 

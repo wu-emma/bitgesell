@@ -22,11 +22,8 @@ CScriptID::CScriptID(const ScriptHash& in) : BaseHash(static_cast<uint160>(in)) 
 ScriptHash::ScriptHash(const CScript& in) : BaseHash(Hash160(in)) {}
 ScriptHash::ScriptHash(const CScriptID& in) : BaseHash(static_cast<uint160>(in)) {}
 
-PKHash::PKHash(const CPubKey& pubkey) : uint160(pubkey.GetID()) {}
-PKHash::PKHash(const CKeyID& pubkey_id) : uint160(pubkey_id) {}
-
-WitnessV0KeyHash::WitnessV0KeyHash(const CPubKey& pubkey) : uint160(pubkey.GetID()) {}
-WitnessV0KeyHash::WitnessV0KeyHash(const PKHash& pubkey_hash) : uint160(static_cast<uint160>(pubkey_hash)) {}
+PKHash::PKHash(const CPubKey& pubkey) : BaseHash(pubkey.GetID()) {}
+PKHash::PKHash(const CKeyID& pubkey_id) : BaseHash(pubkey_id) {}
 
 WitnessV0KeyHash::WitnessV0KeyHash(const CPubKey& pubkey) : BaseHash(pubkey.GetID()) {}
 WitnessV0KeyHash::WitnessV0KeyHash(const PKHash& pubkey_hash) : BaseHash(static_cast<uint160>(pubkey_hash)) {}
@@ -314,6 +311,18 @@ CScript GetScriptForMultisig(int nRequired, const std::vector<CPubKey>& keys)
         script << ToByteVector(key);
     script << CScript::EncodeOP_N(keys.size()) << OP_CHECKMULTISIG;
     return script;
+}
+
+CScript GetScriptForWitness(const CScript& redeemscript)
+{
+    std::vector<std::vector<unsigned char> > vSolutions;
+    TxoutType typ = Solver(redeemscript, vSolutions);
+    if (typ == TxoutType::PUBKEY) {
+        return GetScriptForDestination(WitnessV0KeyHash(Hash160(vSolutions[0])));
+    } else if (typ == TxoutType::PUBKEYHASH) {
+        return GetScriptForDestination(WitnessV0KeyHash(uint160{vSolutions[0]}));
+    }
+    return GetScriptForDestination(WitnessV0ScriptHash(redeemscript));
 }
 
 bool IsValidDestination(const CTxDestination& dest) {

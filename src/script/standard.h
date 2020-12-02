@@ -90,7 +90,7 @@ class CScriptID : public BaseHash<uint160>
 public:
     CScriptID() : BaseHash() {}
     explicit CScriptID(const CScript& in);
-    explicit CScriptID(const uint160& in) : uint160(in) {}
+    explicit CScriptID(const uint160& in) : BaseHash(in) {}
     explicit CScriptID(const ScriptHash& in);
 };
 
@@ -114,7 +114,7 @@ extern unsigned nMaxDatacarrierBytes;
  * them to be valid. (but old blocks may not comply with) Currently just P2SH,
  * but in the future other flags may be added.
  *
- * Failing one of these tests may trigger a DoS ban - see CheckInputs() for
+ * Failing one of these tests may trigger a DoS ban - see CheckInputScripts() for
  * details.
  */
 static const unsigned int MANDATORY_SCRIPT_VERIFY_FLAGS = SCRIPT_VERIFY_P2SH;
@@ -202,11 +202,11 @@ struct WitnessUnknown
 /**
  * A txout script template with a specific destination. It is either:
  *  * CNoDestination: no destination set
- *  * PKHash: TX_PUBKEYHASH destination (P2PKH)
- *  * ScriptHash: TX_SCRIPTHASH destination (P2SH)
- *  * WitnessV0ScriptHash: TX_WITNESS_V0_SCRIPTHASH destination (P2WSH)
- *  * WitnessV0KeyHash: TX_WITNESS_V0_KEYHASH destination (P2WPKH)
- *  * WitnessUnknown: TX_WITNESS_UNKNOWN destination (P2W???)
+ *  * PKHash: TxoutType::PUBKEYHASH destination (P2PKH)
+ *  * ScriptHash: TxoutType::SCRIPTHASH destination (P2SH)
+ *  * WitnessV0ScriptHash: TxoutType::WITNESS_V0_SCRIPTHASH destination (P2WSH)
+ *  * WitnessV0KeyHash: TxoutType::WITNESS_V0_KEYHASH destination (P2WPKH)
+ *  * WitnessUnknown: TxoutType::WITNESS_UNKNOWN destination (P2W???)
  *  A CTxDestination is the internal data type encoded in a BGL address
  */
 typedef boost::variant<CNoDestination, PKHash, ScriptHash, WitnessV0ScriptHash, WitnessV0KeyHash, WitnessUnknown> CTxDestination;
@@ -262,5 +262,15 @@ CScript GetScriptForRawPubKey(const CPubKey& pubkey);
 
 /** Generate a multisig script. */
 CScript GetScriptForMultisig(int nRequired, const std::vector<CPubKey>& keys);
+
+/**
+ * Generate a pay-to-witness script for the given redeem script. If the redeem
+ * script is P2PK or P2PKH, this returns a P2WPKH script, otherwise it returns a
+ * P2WSH script.
+ *
+ * TODO: replace calls to GetScriptForWitness with GetScriptForDestination using
+ * the various witness-specific CTxDestination subtypes.
+ */
+CScript GetScriptForWitness(const CScript& redeemscript);
 
 #endif // BGL_SCRIPT_STANDARD_H

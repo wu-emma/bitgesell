@@ -1,5 +1,5 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2020 The Bitcoin Core developers
+// Copyright (c) 2009-2020 The BGL Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -15,6 +15,7 @@ class CTxMemPool;
 class ChainstateManager;
 
 extern RecursiveMutex cs_main;
+extern RecursiveMutex g_cs_orphans;
 
 /** Default for -maxorphantx, maximum number of orphan transactions kept in memory */
 static const unsigned int DEFAULT_MAX_ORPHAN_TRANSACTIONS = 100;
@@ -27,7 +28,7 @@ static const int DISCOURAGEMENT_THRESHOLD{100};
 
 class PeerLogicValidation final : public CValidationInterface, public NetEventsInterface {
 private:
-    CConnman& m_connman;
+    CConnman* const connman;
     /** Pointer to this node's banman. May be nullptr - check existence before dereferencing. */
     BanMan* const m_banman;
     ChainstateManager& m_chainman;
@@ -36,7 +37,7 @@ private:
     bool MaybeDiscourageAndDisconnect(CNode& pnode);
 
 public:
-    PeerLogicValidation(CConnman& connman, BanMan* banman, CScheduler& scheduler, ChainstateManager& chainman, CTxMemPool& pool);
+    PeerLogicValidation(CConnman* connman, BanMan* banman, CScheduler& scheduler, ChainstateManager& chainman, CTxMemPool& pool);
 
     /**
      * Overridden from CValidationInterface.
@@ -89,7 +90,7 @@ private:
 };
 
 struct CNodeStateStats {
-    int m_misbehavior_score = 0;
+    int nMisbehavior = 0;
     int nSyncHeight = -1;
     int nCommonHeight = -1;
     std::vector<int> vHeightInFlight;
