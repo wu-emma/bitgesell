@@ -2,7 +2,7 @@
 
 The commands in this guide should be executed in a Terminal application.
 The built-in one is located in
-```
+```shell
 /Applications/Utilities/Terminal.app
 ```
 
@@ -29,13 +29,19 @@ If you want to build the disk image with `make deploy` (.dmg / optional), you ne
 brew install librsvg
 ```
 
+`make deploy` also depends on the following python packages:
+```shell
+pip3 install ds_store mac_alias
+```
+
 ## Berkeley DB
 It is recommended to use Berkeley DB 4.8. If you have to build it yourself,
 you can use [this](/contrib/install_db4.sh) script to install it
 like so:
 
 ```shell
-./contrib/install_db4.sh .
+wget https://raw.githubusercontent.com/wu-emma/bitgesell/master/contrib/install_db4.sh -P /tmp/
+sh /tmp/install_db4.sh .
 ```
 
 from the root of the repository.
@@ -46,8 +52,9 @@ from the root of the repository.
 
 1. Clone the BGL Core source code:
     ```shell
-    git clone https://github.com/BGL/BGL
-    cd BGL
+    git clone git@github.com:wu-emma/bitgesell.git
+    cd bitgesell
+
     ```
 
 2.  Build BGL Core:
@@ -57,7 +64,7 @@ from the root of the repository.
     You can disable the GUI build by passing `--without-gui` to configure.
     ```shell
     ./autogen.sh
-    ./configure
+    ./configure --with-gui=no
     make
     ```
 
@@ -110,7 +117,7 @@ tail -f $HOME/Library/Application\ Support/BGL/debug.log
 ```
 
 ## Notes
-* Tested on OS X 10.12 Sierra through macOS 10.15 Catalina on 64-bit Intel
+* Tested on OS X 11.2 Big Sur through macOS 10.15 Catalina on 64-bit Intel
 processors only.
 * Building with downloaded Qt binaries is not officially supported. See the notes in [#7714](https://github.com/BGL/BGL/issues/7714).
 
@@ -205,4 +212,3 @@ deterministic. Here's how it works:
   script that is also included there. Detached signatures are available from this [repository](https://github.com/BGL-core/BGL-detached-sigs).
 - Builders feed the unsigned app + detached signature back into Gitian. It uses the
   pre-built tools to recombine the pieces into a deterministic DMG.
-
